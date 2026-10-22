@@ -1,6 +1,11 @@
 """
 monitor.py - The monitoring service. Run it with:  python3 monitor.py
 
+Optional time limit, so a trial run ends by itself:
+    python3 monitor.py --until 2026-10-29T09:00
+After that date/time (your local time) it notifies you and exits.
+scripts/start_service.sh uses this to run it for one week.
+
 Every `interval_seconds` (default 60) it:
   1. checks every target at the same time (in parallel threads, so one
      slow target doesn't delay the rest),
@@ -14,7 +19,9 @@ Every `interval_seconds` (default 60) it:
 Stop it with Ctrl+C.
 """
 
+import argparse
 import time
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 from netmon import storage
@@ -24,6 +31,7 @@ from netmon.checks import check_target
 from netmon.config import load_config, resolve_path
 from netmon.diagnosis import diagnose
 from netmon.health import unresponsive_targets
+from netmon.notify import notify
 
 
 def run_cycle(config, conn, tracker, incidents, known_unresponsive):
@@ -75,7 +83,26 @@ def run_cycle(config, conn, tracker, incidents, known_unresponsive):
     print(f"  Diagnosis: {layer} - {summary}")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Network monitor service")
+    parser.add_argument("--until", type=datetime.fromisoformat, metavar="YYYY-MM-DDTHH:MM",
+                        help="stop automatically at this local date/time")
+    return parser.parse_args()
+
+
+def finished(until):
+    """True once the optional --until time has passed."""
+    return until is not None and datetime.now() >= until
+
+
 def main():
+    args = parse_args()
+    if finished(args.until):
+        # Exit code 0 tells the background service this was a normal stop, not a crash,
+        # so it won't restart us (see scripts/start_service.sh).
+        print(f"Monitoring period ended at {args.until}. Nothing to do.")
+        return
+
     config = load_config()
     conn = storage.connect(resolve_path(config["database_path"]))
     logger = setup_alert_logger(resolve_path(config["alert_log_path"]))
@@ -85,14 +112,20 @@ def main():
 
     print(f"Using {config['_source']}; checking {len(config['targets'])} targets "
           f"every {config['interval_seconds']} s. Press Ctrl+C to stop.")
+    if args.until:
+        print(f"Will stop automatically at {args.until}.")
     try:
-        while True:
+        while not finished(args.until):
             started = time.monotonic()
             print(f"[{storage.now_utc()}] running checks...")
             run_cycle(config, conn, tracker, incidents, known_unresponsive)
             # Sleep for whatever is left of the interval so cycles stay ~60 s apart.
             elapsed = time.monotonic() - started
             time.sleep(max(0, config["interval_seconds"] - elapsed))
+        logger.info("Monitoring period finished.")
+        if config["notifications"]:
+            notify("Network monitor: finished",
+                   "Your monitoring period is over - time to review the results and fill in Findings.")
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
