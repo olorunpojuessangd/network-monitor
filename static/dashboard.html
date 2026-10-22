@@ -1,0 +1,158 @@
+<!doctype html>
+<!--
+  dashboard.html - The page served by dashboard.py.
+  It fetches JSON from /api/results and /api/alerts and draws:
+    - a status table (latest result per target)
+    - a latency-over-time chart
+    - a packet-loss-over-time chart
+    - a list of recent alerts
+  Charts use Chart.js, loaded from a CDN. The page refreshes itself every 60 s.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Network Monitor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 16px;
+           background: #f6f7f9; color: #1d2330; }
+    main { max-width: 1100px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; margin: 0 0 4px; }
+    .sub { color: #667; margin: 0 0 16px; font-size: 0.9rem; }
+    .card { background: #fff; border: 1px solid #e2e5ea; border-radius: 8px;
+            padding: 16px; margin-bottom: 16px; }
+    .card h2 { font-size: 1rem; margin: 0 0 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eef0f3; }
+    th { color: #667; font-weight: 600; }
+    .ok { color: #1a7f37; font-weight: 600; }
+    .bad { color: #c62828; font-weight: 600; }
+    .chart-box { position: relative; height: 280px; }
+    select { font-size: 0.9rem; padding: 4px; }
+    .table-wrap { overflow-x: auto; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Network Monitor</h1>
+  <p class="sub">
+    Showing the last
+    <select id="hours">
+      <option value="1">1 hour</option>
+      <option value="6">6 hours</option>
+      <option value="24" selected>24 hours</option>
+      <option value="168">7 days</option>
+    </select>
+    · updated <span id="updated">never</span>
+  </p>
+
+  <div class="card">
+    <h2>Current status</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Target</th><th>Host</th><th>Latency</th><th>Loss</th><th>DNS</th><th>Status</th></tr></thead>
+        <tbody id="status"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card"><h2>Latency (ms)</h2><div class="chart-box"><canvas id="latencyChart"></canvas></div></div>
+  <div class="card"><h2>Packet loss (%)</h2><div class="chart-box"><canvas id="lossChart"></canvas></div></div>
+
+  <div class="card">
+    <h2>Recent alerts</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Event</th><th>Details</th></tr></thead>
+        <tbody id="alerts"></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+  // One fixed colour per target, in config order.
+  const COLORS = ["#2a6fdb", "#e8710a", "#1a7f37", "#9334e6", "#c62828", "#00838f", "#795548"];
+  let latencyChart, lossChart;
+
+  // "2026-10-21T14:03:00+00:00" -> local time like "Oct 21, 2:03 PM"
+  const fmtTime = ts => new Date(ts).toLocaleString([], { month: "short", day: "numeric",
+                                                          hour: "numeric", minute: "2-digit" });
+  const fmtMs = v => v == null ? "–" : v.toFixed(1) + " ms";
+
+  // Escape text before putting it into HTML (target names come from config).
+  const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  // Turn the flat list of rows into one chart line per target.
+  function buildDatasets(rows, field) {
+    const times = [...new Set(rows.map(r => r.ts))];            // x-axis: each check cycle
+    const targets = [...new Set(rows.map(r => r.target))];
+    const datasets = targets.map((name, i) => {
+      const byTime = {};
+      rows.filter(r => r.target === name).forEach(r => byTime[r.ts] = r[field]);
+      return {
+        label: name,
+        data: times.map(t => byTime[t] ?? null),                  // null = gap in the line
+        borderColor: COLORS[i % COLORS.length],
+        backgroundColor: COLORS[i % COLORS.length],
+        borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+      };
+    });
+    return { labels: times.map(fmtTime), datasets };
+  }
+
+  function drawChart(existing, canvasId, data) {
+    if (existing) existing.destroy();
+    return new Chart(document.getElementById(canvasId), {
+      type: "line",
+      data,
+      options: {
+        maintainAspectRatio: false, animation: false,
+        interaction: { mode: "index", intersect: false },
+        scales: { x: { ticks: { maxTicksLimit: 8 } }, y: { beginAtZero: true } },
+      },
+    });
+  }
+
+  function drawStatus(rows) {
+    // The last row for each target is its latest result.
+    const latest = {};
+    rows.forEach(r => latest[r.target] = r);
+    document.getElementById("status").innerHTML = Object.values(latest).map(r => `
+      <tr>
+        <td>${esc(r.target)}</td><td>${esc(r.host)}</td>
+        <td>${fmtMs(r.latency_ms)}</td><td>${r.packet_loss_pct.toFixed(0)}%</td>
+        <td>${fmtMs(r.dns_ms)}</td>
+        <td class="${r.degraded ? "bad" : "ok"}">${r.degraded ? "DEGRADED – " + esc(r.reason) : "OK"}</td>
+      </tr>`).join("") || `<tr><td colspan="6">No data yet – is monitor.py running?</td></tr>`;
+  }
+
+  function drawAlerts(alerts) {
+    document.getElementById("alerts").innerHTML = alerts.map(a => `
+      <tr>
+        <td>${fmtTime(a.ts)}</td>
+        <td class="${a.kind === "DEGRADED" ? "bad" : "ok"}">${esc(a.kind)}</td>
+        <td>${esc(a.message)}</td>
+      </tr>`).join("") || `<tr><td colspan="3">No alerts.</td></tr>`;
+  }
+
+  async function refresh() {
+    const hours = document.getElementById("hours").value;
+    const [rows, alerts] = await Promise.all([
+      fetch(`/api/results?hours=${hours}`).then(r => r.json()),
+      fetch("/api/alerts").then(r => r.json()),
+    ]);
+    drawStatus(rows);
+    latencyChart = drawChart(latencyChart, "latencyChart", buildDatasets(rows, "latency_ms"));
+    lossChart = drawChart(lossChart, "lossChart", buildDatasets(rows, "packet_loss_pct"));
+    drawAlerts(alerts);
+    document.getElementById("updated").textContent = new Date().toLocaleTimeString();
+  }
+
+  document.getElementById("hours").addEventListener("change", refresh);
+  refresh();
+  setInterval(refresh, 60000);
+</script>
+</body>
+</html>

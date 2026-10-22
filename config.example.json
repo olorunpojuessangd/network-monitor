@@ -1,0 +1,22 @@
+{
+  "interval_seconds": 60,
+  "ping_count": 10,
+  "database_path": "data/netmon.db",
+  "alert_log_path": "logs/alerts.log",
+  "dashboard_port": 8080,
+
+  "thresholds": {
+    "packet_loss_pct": 5,
+    "latency_ms": 100,
+    "dns_ms": 200
+  },
+
+  "targets": [
+    { "name": "Router",       "host": "192.168.1.1", "latency_ms": 20 },
+    { "name": "Cloudflare DNS", "host": "1.1.1.1" },
+    { "name": "Google DNS",   "host": "8.8.8.8" },
+    { "name": "Google",       "host": "google.com" },
+    { "name": "Cloudflare",   "host": "cloudflare.com" },
+    { "name": "Wikipedia",    "host": "wikipedia.org" }
+  ]
+}

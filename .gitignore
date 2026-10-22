@@ -1,0 +1,25 @@
+# Your personal settings (real router IP etc.) - copy from config.example.json
+config.json
+
+# Runtime data: the SQLite database and alert logs
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Secrets, just in case one is ever added
+.env
+*.pem
+*.key
+
+# Python / OS clutter
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+
+# Local editor/tool settings
+.claude/
