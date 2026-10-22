@@ -1,7 +1,9 @@
 <!doctype html>
 <!--
   dashboard.html - The page served by dashboard.py.
-  It fetches JSON from /api/results and /api/alerts and draws:
+  It fetches JSON from /api/results, /api/alerts and /api/status and draws:
+    - warnings about the monitor itself (stopped, misconfigured targets)
+    - the automatic diagnosis (which network layer has a problem, if any)
     - a status table (latest result per target)
     - a latency-over-time chart
     - a packet-loss-over-time chart
@@ -31,6 +33,11 @@
     .chart-box { position: relative; height: 280px; }
     select { font-size: 0.9rem; padding: 4px; }
     .table-wrap { overflow-x: auto; }
+    .warning { background: #fff4e5; border: 1px solid #f5c58a; color: #7a4100;
+               border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 0.9rem; }
+    .diag { border-left: 6px solid #1a7f37; }
+    .diag.problem { border-left-color: #c62828; }
+    .diag .layer { font-weight: 700; margin-right: 6px; }
   </style>
 </head>
 <body>
@@ -46,6 +53,13 @@
     </select>
     · updated <span id="updated">never</span>
   </p>
+
+  <div id="warnings"></div>
+
+  <div class="card diag" id="diagCard">
+    <h2>Diagnosis</h2>
+    <div><span class="layer" id="diagLayer">–</span><span id="diagSummary">Waiting for data…</span></div>
+  </div>
 
   <div class="card">
     <h2>Current status</h2>
@@ -132,17 +146,33 @@
     document.getElementById("alerts").innerHTML = alerts.map(a => `
       <tr>
         <td>${fmtTime(a.ts)}</td>
-        <td class="${a.kind === "DEGRADED" ? "bad" : "ok"}">${esc(a.kind)}</td>
+        <td class="${["DEGRADED", "INCIDENT"].includes(a.kind) ? "bad" : "ok"}">${esc(a.kind)}</td>
         <td>${esc(a.message)}</td>
       </tr>`).join("") || `<tr><td colspan="3">No alerts.</td></tr>`;
   }
 
+  // Plain-English names for the diagnosis layers.
+  const LAYER_NAMES = { OK: "Healthy", LAN: "Local network", ISP: "ISP / upstream",
+                        DNS: "DNS", SITE: "Single site", PARTIAL: "Partial" };
+
+  function drawHealth(status) {
+    document.getElementById("warnings").innerHTML =
+      status.warnings.map(w => `<div class="warning">⚠ ${esc(w)}</div>`).join("");
+    const d = status.diagnosis;
+    if (!d) return;
+    document.getElementById("diagCard").classList.toggle("problem", d.layer !== "OK");
+    document.getElementById("diagLayer").textContent = (LAYER_NAMES[d.layer] || d.layer) + ":";
+    document.getElementById("diagSummary").textContent = d.summary + " (as of " + fmtTime(d.ts) + ")";
+  }
+
   async function refresh() {
     const hours = document.getElementById("hours").value;
-    const [rows, alerts] = await Promise.all([
+    const [rows, alerts, status] = await Promise.all([
       fetch(`/api/results?hours=${hours}`).then(r => r.json()),
       fetch("/api/alerts").then(r => r.json()),
+      fetch("/api/status").then(r => r.json()),
     ]);
+    drawHealth(status);
     drawStatus(rows);
     latencyChart = drawChart(latencyChart, "latencyChart", buildDatasets(rows, "latency_ms"));
     lossChart = drawChart(lossChart, "lossChart", buildDatasets(rows, "packet_loss_pct"));

@@ -9,6 +9,7 @@ It serves two kinds of things:
   /                      -> the HTML page (static/dashboard.html)
   /api/results?hours=24  -> JSON list of results from the last N hours
   /api/alerts            -> JSON list of the most recent alerts
+  /api/status            -> JSON: latest diagnosis + the monitor's own health warnings
 
 The page's JavaScript calls the /api/ URLs and draws the charts.
 It only listens on 127.0.0.1, so it is reachable from this computer only.
@@ -20,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from netmon import storage
+from netmon.health import monitor_status
 from netmon.config import PROJECT_ROOT, load_config, resolve_path
 
 CONFIG = load_config()
@@ -37,11 +39,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send(200, "text/html", HTML_PATH.read_bytes())
 
         elif url.path == "/api/results":
-            hours = float(parse_qs(url.query).get("hours", ["24"])[0])
+            try:
+                hours = float(parse_qs(url.query).get("hours", ["24"])[0])
+            except ValueError:
+                return self._send(400, "text/plain", b"hours must be a number")
             self._send_json(self._query(lambda conn: storage.recent_results(conn, hours)))
 
         elif url.path == "/api/alerts":
             self._send_json(self._query(storage.recent_alerts))
+
+        elif url.path == "/api/status":
+            self._send_json(self._query(lambda conn: monitor_status(conn, CONFIG)))
 
         else:
             self._send(404, "text/plain", b"Not found")

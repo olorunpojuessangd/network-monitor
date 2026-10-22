@@ -4,6 +4,7 @@
   "database_path": "data/netmon.db",
   "alert_log_path": "logs/alerts.log",
   "dashboard_port": 8080,
+  "notifications": true,
 
   "thresholds": {
     "packet_loss_pct": 5,
@@ -11,12 +12,25 @@
     "dns_ms": 200
   },
 
+  "baseline": {
+    "window_hours": 24,
+    "min_samples": 30,
+    "multiplier": 2.0,
+    "min_increase_ms": 10
+  },
+
+  "health": {
+    "stale_after_cycles": 3,
+    "unresponsive_window_hours": 1,
+    "unresponsive_min_samples": 10
+  },
+
   "targets": [
-    { "name": "Router",       "host": "192.168.1.1", "latency_ms": 20 },
-    { "name": "Cloudflare DNS", "host": "1.1.1.1" },
-    { "name": "Google DNS",   "host": "8.8.8.8" },
-    { "name": "Google",       "host": "google.com" },
-    { "name": "Cloudflare",   "host": "cloudflare.com" },
-    { "name": "Wikipedia",    "host": "wikipedia.org" }
+    { "name": "Router",         "host": "192.168.1.1",    "role": "gateway",  "latency_ms": 20 },
+    { "name": "Cloudflare DNS", "host": "1.1.1.1",        "role": "internet" },
+    { "name": "Google DNS",     "host": "8.8.8.8",        "role": "internet" },
+    { "name": "Google",         "host": "google.com",     "role": "website" },
+    { "name": "Cloudflare",     "host": "cloudflare.com", "role": "website" },
+    { "name": "Wikipedia",      "host": "wikipedia.org",  "role": "website" }
   ]
 }
