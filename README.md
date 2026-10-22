@@ -17,7 +17,7 @@ already know whether the problem is:
 - **a single website** (everything else is healthy).
 
 This project mirrors that duty. Each target in the config sits at a different
-layer, so comparing them helps narrow down where a problem is.
+layer, and the monitor compares them automatically to say where a problem is.
 
 ## Features
 
@@ -26,7 +26,14 @@ layer, so comparing them helps narrow down where a problem is.
 - Stores every result in a SQLite database (`data/netmon.db`)
 - Flags a target as **DEGRADED** when packet loss > 5%, latency > threshold, or DNS is slow/failing,
   and logs an alert to `logs/alerts.log` (only when the state changes, so the log isn't spammed)
-- A local web dashboard with a status table, latency and packet-loss charts, and recent alerts
+- **Automatic diagnosis**: each cycle it works out which layer is at fault (local network,
+  ISP, DNS, a single website) and explains it in plain English, the way a technician triages a ticket
+- **Learned baselines**: flags latency that is unusual *for that target* (e.g. 2x its normal 24-hour
+  median), not just over a fixed number
+- **Desktop notifications** (macOS / Linux) when an incident opens, changes or resolves: one popup per incident
+- **Self-health checks**: the dashboard warns if the monitor has stopped sending data, and the monitor warns
+  about targets that never answer ping (probably misconfigured) and leaves them out of the diagnosis
+- A local web dashboard with a diagnosis banner, warnings, status table, latency and packet-loss charts, and recent alerts
 - No third-party Python packages: everything uses the Python standard library
 
 ## Setup
@@ -66,7 +73,13 @@ All settings live in `config.json` (falls back to `config.example.json`):
 | `thresholds.packet_loss_pct` | Loss above this % is degraded (default 5) |
 | `thresholds.latency_ms` | Average latency above this is degraded (default 100) |
 | `thresholds.dns_ms` | DNS lookup slower than this is degraded (default 200) |
-| `targets[]` | `name` + `host`; a target may override any threshold, e.g. `"latency_ms": 20` for the router |
+| `notifications` | `true` to show desktop popups for incidents |
+| `baseline.window_hours` | History used to learn each target's normal latency (default 24) |
+| `baseline.min_samples` | Results needed before judging against the baseline (default 30, about 30 minutes) |
+| `baseline.multiplier` / `min_increase_ms` | Unusual = more than 2x normal **and** at least 10 ms above it |
+| `health.stale_after_cycles` | Dashboard warns if no data for this many intervals (default 3) |
+| `health.unresponsive_window_hours` | A target that never answers ping for this long is flagged as misconfigured (default 1) |
+| `targets[]` | `name`, `host`, `role` (`gateway`, `internet` or `website`; guessed if left out); a target may override any threshold, e.g. `"latency_ms": 20` for the router |
 
 ### Keeping it running for weeks
 
@@ -82,18 +95,32 @@ is awake. Simple options:
             config.json
                  │
                  ▼
- ┌──────────────────────────────┐        ┌────────────────────────┐
- │ monitor.py  (every 60 s)     │        │ dashboard.py           │
- │                              │        │ http://127.0.0.1:8080  │
- │  checks.py   ping + DNS ─────┤        │                        │
- │  alerts.py   degraded? ──────┼──► logs/alerts.log              │
- │  storage.py  save ───────────┼──► data/netmon.db ◄── reads ────┤
- └──────────────────────────────┘        │  /api/results          │
-                                         │  /api/alerts           │
-                                         └──────────┬─────────────┘
-                                                    ▼
-                                      static/dashboard.html (Chart.js)
+ ┌────────────────────────────────┐       ┌────────────────────────┐
+ │ monitor.py  (every 60 s)       │       │ dashboard.py           │
+ │                                │       │ http://127.0.0.1:8080  │
+ │  checks.py    ping + DNS       │       │                        │
+ │  baseline.py  what's normal?   │       │  health.py  monitor    │
+ │  alerts.py    degraded? ───────┼──► logs/alerts.log   stopped?  │
+ │  diagnosis.py which layer? ────┼──► notify.py (desktop popup)   │
+ │  health.py    bad targets?     │       │                        │
+ │  storage.py   save ────────────┼──► data/netmon.db ◄── reads ───┤
+ └────────────────────────────────┘       │  /api/results          │
+                                          │  /api/alerts           │
+                                          │  /api/status           │
+                                          └──────────┬─────────────┘
+                                                     ▼
+                                       static/dashboard.html (Chart.js)
 ```
+
+**Diagnosis logic** (`netmon/diagnosis.py`), working from the inside out:
+
+| What's degraded | Diagnosis | Suggested action |
+|---|---|---|
+| Router | **LAN** | Check Wi-Fi / restart router before calling the ISP |
+| Router OK, all public IPs bad | **ISP** | Upstream / modem problem: contact the ISP with the data |
+| Pings OK, most websites' DNS slow or failing | **DNS** | Switch DNS servers |
+| Only some websites | **SITE** | Not your network |
+| Some other mix | **PARTIAL** | Watch whether it spreads or clears |
 
 | File | What it does |
 |---|---|
@@ -102,9 +129,14 @@ is awake. Simple options:
 | `netmon/config.py` | Loads `config.json` (or the example) and resolves file paths |
 | `netmon/checks.py` | Times DNS lookups and runs the system `ping`, parsing its summary |
 | `netmon/storage.py` | SQLite schema and the functions that read/write results and alerts |
-| `netmon/alerts.py` | Threshold rules and the DEGRADED/RECOVERED state tracker + alert log |
+| `netmon/alerts.py` | Threshold + baseline rules, per-target DEGRADED/RECOVERED tracking, and network-wide INCIDENT/RESOLVED tracking |
+| `netmon/baseline.py` | Learns each target's normal latency (24 h median) and spots unusual values |
+| `netmon/diagnosis.py` | Decides which network layer is at fault each cycle |
+| `netmon/health.py` | Self-checks: is the monitor still running? Does any target never answer ping? |
+| `netmon/notify.py` | Desktop notifications via `osascript` (macOS) or `notify-send` (Linux) |
 | `static/dashboard.html` | The dashboard page: status table, charts, alert list |
 | `tests/test_checks.py` | Unit tests for ping parsing and alert logic |
+| `tests/test_intelligence.py` | Unit tests for diagnosis, baselines, health checks and config defaults |
 
 **Design choices**
 
@@ -112,12 +144,24 @@ is awake. Simple options:
 - *SQLite*: one file, no server, queryable with plain SQL (`sqlite3 data/netmon.db`).
 - *Monitor and dashboard are separate processes*: the dashboard can be stopped/restarted without losing data.
 - *Alert on state change*: one alert when something breaks and one when it recovers, like opening and closing a ticket.
+- *Notify per incident, not per target*: when the router drops, every target goes bad. That's one LAN incident and one popup, not six.
+- *Median, not average, for baselines*: a few huge spikes don't shift what counts as "normal".
 
 **Known limitations**
 
 - Some sites block ping (ICMP). If a website shows 100% loss but loads fine in a browser, that's why: swap it for another.
 - DNS times can be near 0 ms after the first lookup because the OS caches answers. Spikes and failures still show up.
-- Thresholds are fixed numbers, not learned baselines.
+- Baselines need about 30 minutes of history before they start flagging; until then, only fixed thresholds apply.
+- A long outage slowly raises the 24-hour baseline; fixed thresholds still catch big problems.
+- The monitor can't notify you that it has *stopped*: that warning only appears on the dashboard.
+
+## Security
+
+- The dashboard listens on `127.0.0.1` only (not reachable from other devices) and is read-only.
+- SQL uses parameterized queries; `ping` and `osascript` are run without a shell, with arguments passed separately, so hostnames and messages can't inject commands.
+- Text from the database is HTML-escaped before display.
+- No secrets are needed. Personal config, the database and logs are git-ignored.
+- Not included: login or HTTPS for the dashboard. Don't expose it beyond localhost without adding them.
 
 ## Findings
 
@@ -156,4 +200,8 @@ FROM results GROUP BY target;
 
 -- Every alert
 SELECT ts, kind, message FROM alerts ORDER BY ts;
+
+-- Every incident the diagnosis found, and how often each layer was at fault
+SELECT ts, message FROM alerts WHERE kind IN ('INCIDENT', 'RESOLVED') ORDER BY ts;
+SELECT layer, COUNT(*) AS minutes FROM diagnoses GROUP BY layer;
 ```
