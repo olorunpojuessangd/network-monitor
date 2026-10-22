@@ -81,13 +81,35 @@ All settings live in `config.json` (falls back to `config.example.json`):
 | `health.unresponsive_window_hours` | A target that never answers ping for this long is flagged as misconfigured (default 1) |
 | `targets[]` | `name`, `host`, `role` (`gateway`, `internet` or `website`; guessed if left out); a target may override any threshold, e.g. `"latency_ms": 20` for the router |
 
-### Keeping it running for weeks
+### Running it in the background for a set period
 
-The monitor only collects data while `monitor.py` is running and the computer
-is awake. Simple options:
+To collect data for a week without keeping a terminal open:
 
-- Leave it in a terminal and use `caffeinate -i python3 monitor.py` (macOS) to stop the Mac sleeping.
-- Run it on an always-on machine such as a Raspberry Pi.
+```bash
+./scripts/start_service.sh      # 7 days; pass a number for a different length, e.g. 3
+```
+
+This installs a macOS **LaunchAgent** (`~/Library/LaunchAgents/local.network-monitor.plist`), the
+standard way macOS runs background programs. The script is commented line by line, but in short, launchd:
+
+- starts `monitor.py` now and again whenever you log in,
+- restarts it if it crashes (but not when it finishes normally),
+- runs it under `caffeinate -i` so the Mac doesn't idle-sleep (closing a laptop lid still sleeps it),
+- passes `--until <date>`, so after the period the monitor sends a "finished" notification and exits.
+
+Useful commands while it runs:
+
+```bash
+tail -f logs/monitor.out.log                          # watch each check cycle live
+cat logs/alerts.log                                   # just the alerts and incidents
+launchctl print gui/$(id -u)/local.network-monitor | grep state   # is it running?
+python3 dashboard.py                                  # then open http://127.0.0.1:8080
+./scripts/stop_service.sh                             # stop early / clean up (data is kept)
+```
+
+Run `./scripts/stop_service.sh` after the period too, to remove the LaunchAgent file.
+
+You can also run a timed session in the foreground: `python3 monitor.py --until 2026-10-29T09:00`.
 
 ## Architecture
 
@@ -124,7 +146,7 @@ is awake. Simple options:
 
 | File | What it does |
 |---|---|
-| `monitor.py` | Main loop: runs all checks in parallel each cycle, evaluates, saves, alerts |
+| `monitor.py` | Main loop: runs all checks in parallel each cycle, evaluates, saves, alerts; optional `--until` end time |
 | `dashboard.py` | Tiny web server: serves the HTML page and JSON API, reading from SQLite |
 | `netmon/config.py` | Loads `config.json` (or the example) and resolves file paths |
 | `netmon/checks.py` | Times DNS lookups and runs the system `ping`, parsing its summary |
@@ -135,6 +157,7 @@ is awake. Simple options:
 | `netmon/health.py` | Self-checks: is the monitor still running? Does any target never answer ping? |
 | `netmon/notify.py` | Desktop notifications via `osascript` (macOS) or `notify-send` (Linux) |
 | `static/dashboard.html` | The dashboard page: status table, charts, alert list |
+| `scripts/start_service.sh` / `stop_service.sh` | Install / remove the macOS background service for a timed run |
 | `tests/test_checks.py` | Unit tests for ping parsing and alert logic |
 | `tests/test_intelligence.py` | Unit tests for diagnosis, baselines, health checks and config defaults |
 
