@@ -147,6 +147,7 @@ You can also run a timed session in the foreground: `python3 monitor.py --until 
 | File | What it does |
 |---|---|
 | `monitor.py` | Main loop: runs all checks in parallel each cycle, evaluates, saves, alerts; optional `--until` end time |
+| `analyze.py` | Turns the collected data into a findings report: coverage, baselines, time-of-day patterns traced to a layer, incidents |
 | `dashboard.py` | Tiny web server: serves the HTML page and JSON API, reading from SQLite |
 | `netmon/config.py` | Loads `config.json` (or the example) and resolves file paths |
 | `netmon/checks.py` | Times DNS lookups and runs the system `ping`, parsing its summary |
@@ -159,6 +160,7 @@ You can also run a timed session in the foreground: `python3 monitor.py --until 
 | `static/dashboard.html` | The dashboard page: status table, charts, alert list |
 | `scripts/start_service.sh` / `stop_service.sh` | Install / remove the macOS background service for a timed run |
 | `tests/test_checks.py` | Unit tests for ping parsing and alert logic |
+| `tests/test_analyze.py` | Unit tests for incident pairing and time-of-day tracing in the report |
 | `tests/test_intelligence.py` | Unit tests for diagnosis, baselines, health checks and config defaults |
 
 **Design choices**
@@ -188,7 +190,19 @@ You can also run a timed session in the foreground: `python3 monitor.py --until 
 
 ## Findings
 
-_To be filled in after running the monitor for a few weeks._
+_To be filled in after running the monitor for one to two weeks._
+
+To generate the numbers, run:
+
+```bash
+python3 analyze.py --out reports/findings.md
+```
+
+The report covers how long the monitor actually ran, including any gaps; each target's normal latency;
+latency by hour of day; and every incident. It also writes plain-English observations. When a time-of-day
+slowdown appears, it compares your router at those hours with the rest of the day. If the router stayed
+flat, the slowdown is upstream (your ISP); if the router slowed too, it starts inside your home. Treat the
+observations as leads: confirm each one on the dashboard before writing it up.
 
 **Monitoring period:** _start date – end date_
 
@@ -208,13 +222,22 @@ _To be filled in after running the monitor for a few weeks._
 ### Patterns
 - _e.g. latency rises every evening between 7 and 10 pm_
 
+### Controlled tests (validating the diagnosis)
+Deliberately cause a problem and check the monitor diagnoses it correctly.
+
+| Test | How | Expected diagnosis | Actual |
+|---|---|---|---|
+| Lose the router | Turn Wi-Fi off for 3 minutes | LAN | |
+| Break DNS | Set DNS to an unused address (e.g. 10.255.255.1) in System Settings for 3 minutes | DNS | |
+| Weak Wi-Fi | Work from the far end of the house for an hour | Router latency up vs baseline | |
+
 ### What I'd tell a user / what I'd escalate
 - _e.g. evidence that would justify a call to the ISP_
 
 ### Lessons learned
 -
 
-Useful queries for this section:
+Useful raw queries (the report covers most of this):
 
 ```sql
 -- Average latency and loss per target
